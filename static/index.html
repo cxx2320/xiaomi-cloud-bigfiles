@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>小米云盘 · 大文件分析</title>
+  <link rel="stylesheet" href="/static/style.css?v=5" />
+</head>
+<body>
+  <div class="aurora"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">☁</span>
+      <div>
+        <h1>小米云盘 · 大文件分析</h1>
+        <p class="sub">按文件大小 / 新增日期排序，快速找出占空间的文件</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <span id="user-chip" class="chip hidden"></span>
+      <button id="btn-logout" class="ghost hidden">退出</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- 登录 -->
+    <section id="login-card" class="card login-card">
+      <h2>连接你的小米云盘</h2>
+      <ol class="steps">
+        <li>在浏览器打开 <a href="https://i.mi.com" target="_blank" rel="noreferrer">i.mi.com</a> 并登录小米账号</li>
+        <li>按 <kbd>F12</kbd> 打开开发者工具 → <b>Console</b> → 输入 <code>document.cookie</code> 回车</li>
+        <li>复制输出的整段字符串粘贴到下面（需包含 <code>serviceToken</code> 和 <code>userId</code>）</li>
+      </ol>
+
+      <label class="field">
+        <span>Cookie</span>
+        <textarea id="cookie" rows="4" placeholder="serviceToken=xxx; userId=12345678; ..."></textarea>
+      </label>
+
+      <label class="field">
+        <span>passToken <em>（可选，强烈建议填，用于长时间扫描自动续期）</em></span>
+        <input id="pass-token" type="password" placeholder="account.xiaomi.com 域名下的 passToken" autocomplete="off" />
+      </label>
+
+      <div class="row">
+        <button id="btn-login" class="primary">连接云盘</button>
+        <span id="login-msg" class="msg"></span>
+      </div>
+
+      <p class="hint">
+        仅在本机保存 Cookie 到 <code>data/credentials.json</code>（权限 600），不会上传到任何第三方。
+        接口为社区逆向的非官方接口，仅供个人备份分析使用。
+      </p>
+    </section>
+
+    <!-- 主面板 -->
+    <section id="main" class="hidden">
+      <div class="card toolbar">
+        <div class="quota">
+          <div class="quota-head">
+            <span>云盘容量</span>
+            <span id="quota-text">--</span>
+          </div>
+          <div class="bar"><div id="quota-bar" class="bar-fill"></div></div>
+        </div>
+        <div class="toolbar-actions">
+          <span id="scan-msg" class="msg"></span>
+          <button id="btn-scan" class="primary">开始扫描全盘</button>
+          <button id="btn-export" class="ghost">导出 CSV</button>
+        </div>
+      </div>
+
+      <div id="progress" class="card progress-card hidden">
+        <div class="progress-head">
+          <span class="spinner"></span>
+          <span id="progress-text">正在扫描…</span>
+        </div>
+        <div class="bar"><div id="progress-bar" class="bar-fill indeterminate"></div></div>
+        <div id="progress-errors" class="errors"></div>
+      </div>
+
+      <div class="stats">
+        <div class="card stat">
+          <span class="stat-label">文件总数</span>
+          <strong id="stat-count">0</strong>
+        </div>
+        <div class="card stat">
+          <span class="stat-label">占用空间</span>
+          <strong id="stat-size">0 B</strong>
+        </div>
+        <div class="card stat">
+          <span class="stat-label">最大单文件</span>
+          <strong id="stat-largest">0 B</strong>
+        </div>
+        <div class="card stat">
+          <span class="stat-label">扫描时间</span>
+          <strong id="stat-time">--</strong>
+        </div>
+      </div>
+
+      <div class="panels">
+        <div class="card panel">
+          <h3>占用最多的目录</h3>
+          <ul id="list-dirs" class="rank-list"></ul>
+        </div>
+        <div class="card panel">
+          <h3>按类型统计</h3>
+          <ul id="list-types" class="rank-list"></ul>
+        </div>
+        <div class="card panel">
+          <h3>云服务占用明细</h3>
+          <ul id="list-services" class="rank-list"></ul>
+          <p class="hint">相册由本工具扫描；备份类（桌面布局、录音）为手机云备份占用</p>
+        </div>
+      </div>
+
+      <div class="card filters">
+        <label class="field inline">
+          <span>最小大小</span>
+          <select id="f-min-size">
+            <option value="0">不限</option>
+            <option value="10485760">≥ 10 MB</option>
+            <option value="104857600">≥ 100 MB</option>
+            <option value="524288000">≥ 500 MB</option>
+            <option value="1073741824">≥ 1 GB</option>
+            <option value="5368709120">≥ 5 GB</option>
+          </select>
+        </label>
+        <label class="field inline">
+          <span>类型</span>
+          <select id="f-type">
+            <option value="">全部</option>
+            <option value="video">视频</option>
+            <option value="pic">图片</option>
+            <option value="doc">文档</option>
+            <option value="audio">音频</option>
+            <option value="other">其他</option>
+          </select>
+        </label>
+        <label class="field inline">
+          <span>来源</span>
+          <select id="f-source">
+            <option value="">全部</option>
+            <option value="drive">云盘</option>
+            <option value="gallery">相册</option>
+          </select>
+        </label>
+        <label class="field inline grow">
+          <span>关键字</span>
+          <input id="f-q" placeholder="文件名或路径包含…" />
+        </label>
+        <button id="btn-reset" class="ghost">重置</button>
+      </div>
+
+      <div class="card table-card">
+        <div class="table-head">
+          <span id="table-info" class="muted">--</span>
+          <span class="muted">点击表头切换排序</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th data-sort="name" class="sortable">名称</th>
+                <th>预览</th>
+                <th>路径</th>
+                <th data-sort="size" class="sortable num">大小</th>
+                <th data-sort="created" class="sortable">创建时间</th>
+                <th data-sort="modified" class="sortable">修改时间</th>
+                <th>类型</th>
+              </tr>
+            </thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="btn-prev" class="ghost">上一页</button>
+          <span id="page-info" class="muted">--</span>
+          <button id="btn-next" class="ghost">下一页</button>
+          <label class="field inline">
+            <span>每页</span>
+            <select id="f-limit">
+              <option value="50">50</option>
+              <option value="100" selected>100</option>
+              <option value="200">200</option>
+              <option value="500">500</option>
+            </select>
+          </label>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="preview-modal" class="modal hidden">
+    <div class="modal-backdrop" data-close="1"></div>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <header class="modal-head">
+        <span id="pv-title" class="modal-title"></span>
+        <button id="pv-close" class="ghost">关闭</button>
+      </header>
+      <div class="modal-body">
+        <img id="pv-img" alt="" class="hidden" />
+        <p id="pv-empty" class="muted hidden">暂无预览图</p>
+      </div>
+      <footer id="pv-meta" class="modal-foot muted"></footer>
+    </div>
+  </div>
+
+  <footer class="footer">
+    非官方工具 · 只读取目录与文件元数据，不会修改或删除云盘内容
+  </footer>
+
+  <script src="/static/app.js?v=5"></script>
+</body>
+</html>
